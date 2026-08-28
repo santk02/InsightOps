@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: insightops
+      POSTGRES_PASSWORD: insightops
+      POSTGRES_DB: insightops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U insightops -d insightops"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://insightops:insightops@postgres:5432/insightops
+      DATABASE_RO_URL: postgresql://analytics_ro:analytics_ro_pass@postgres:5432/insightops
+      DATABASE_RW_URL: postgresql://analytics_rw:analytics_rw_pass@postgres:5432/insightops
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./charts:/app/charts
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://insightops:insightops@postgres:5432/insightops
+      DATABASE_RO_URL: postgresql://analytics_ro:analytics_ro_pass@postgres:5432/insightops
+      DATABASE_RW_URL: postgresql://analytics_rw:analytics_rw_pass@postgres:5432/insightops
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python -m app.events.worker
+
+volumes:
+  postgres_data:

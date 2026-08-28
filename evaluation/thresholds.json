@@ -1,0 +1,6 @@
+{
+  "sql_exact_match": 1.0,
+  "judge_score_min": 0.7,
+  "approval_compliance": 1.0
+}
+

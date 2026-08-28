@@ -1,0 +1,36 @@
+[
+  {
+    "id": "refund-spike",
+    "request": "Why did refunds spike in the north region in June 2025?",
+    "expected": {
+      "region": "North",
+      "month": "2025-06-01"
+    }
+  },
+  {
+    "id": "test-accounts",
+    "request": "Summarize orders while excluding test accounts.",
+    "expected": {
+      "excludes_test_accounts": true
+    }
+  },
+  {"id": "refund-count", "request": "Count refunds by region.", "expected": {}},
+  {"id": "refund-value", "request": "Summarize refund value by region.", "expected": {}},
+  {"id": "refund-trend", "request": "Show the refund trend by month.", "expected": {}},
+  {"id": "orders-total", "request": "How many orders are there?", "expected": {}},
+  {"id": "orders-revenue", "request": "Summarize order revenue.", "expected": {}},
+  {"id": "support-status", "request": "Summarize support tickets by status.", "expected": {}},
+  {"id": "support-count", "request": "How many support tickets are open?", "expected": {}},
+  {"id": "refund-chart", "request": "Plot refunds by region.", "expected": {}},
+  {"id": "refund-context", "request": "Research context for refund changes.", "expected": {}},
+  {"id": "orders-chart", "request": "Chart the order totals.", "expected": {}},
+  {"id": "test-memory", "request": "Always exclude test accounts from my reports.", "expected": {}},
+  {"id": "simple-count", "request": "Give me a total row count.", "expected": {}},
+  {"id": "refund-north", "request": "Analyze the north refund anomaly.", "expected": {}},
+  {"id": "refund-june", "request": "Compare refunds in June 2025.", "expected": {}},
+  {"id": "support-report", "request": "Make a support report.", "expected": {}},
+  {"id": "orders-report", "request": "Make an orders report.", "expected": {}},
+  {"id": "refund-summary", "request": "Summarize refunds.", "expected": {}},
+  {"id": "visual-summary", "request": "Give me a visual trend summary.", "expected": {}}
+]
+
