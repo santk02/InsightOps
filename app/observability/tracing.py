@@ -16,18 +16,18 @@ from app.config import get_settings
 
 @dataclass
 class TraceSpan:
-    name: str
-    attributes: dict[str, Any]
+    name: str  # span name, e.g. "sql_step"
+    attributes: dict[str, Any]  # arbitrary key/value metadata attached to the span
 
 
 @contextmanager
 def trace_span(name: str, **attributes: Any) -> Iterator[TraceSpan]:
+    """Open a trace span for `name`; a real deployment would emit this to Langfuse/OTel."""
     settings = get_settings()
     span = TraceSpan(name=name, attributes=attributes)
     if not settings.langfuse_enabled:
-        yield span
+        yield span  # tracing disabled — behave as a pure no-op
         return
     # The real Langfuse/OpenTelemetry wiring can be attached here when the
     # deployment has credentials. In local mode this remains a clean no-op.
     yield span
-

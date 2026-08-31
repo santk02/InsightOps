@@ -7,13 +7,59 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Postgres + Redis are the same services docker-compose.yml wires up locally,
+    # so the eval step below can exercise real read/write DB roles in CI too.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: insightops
+          POSTGRES_PASSWORD: insightops
+          POSTGRES_DB: insightops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U insightops -d insightops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://insightops:insightops@localhost:5432/insightops
+      DATABASE_RO_URL: postgresql://insightops:insightops@localhost:5432/insightops
+      DATABASE_RW_URL: postgresql://insightops:insightops@localhost:5432/insightops
+      REDIS_URL: redis://localhost:6379/0
+      APP_ENV: ci
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install
+
+      - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Test
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Unit + integration tests
         run: pytest -q
 
+      - name: Seed a throwaway analytics database
+        run: |
+          psql "$DATABASE_URL" -f scripts/init_db.sql
+          python scripts/seed_data.py
+
+      - name: Run evaluation suite (fails below thresholds.json)
+        run: python -m evaluation.run_eval

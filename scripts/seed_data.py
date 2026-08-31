@@ -1,4 +1,9 @@
-"""Generate synthetic analytics dataset with a planted refund anomaly."""
+"""Generate synthetic analytics dataset with a planted refund anomaly.
+
+Blueprint Phase 0: ~50k rows of orders/customers/regions/support tickets over
+24 months, with a deliberate anomaly so there is a *known* answer to
+evaluate the agent against (a refund spike in one region, one month).
+"""
 
 from __future__ import annotations
 
@@ -23,12 +28,14 @@ REFUND_REASONS = [
     "late delivery",
 ]
 
+# Full-privilege connection — this script runs as an admin/setup step, not through the agent
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://insightops:insightops@localhost:5432/insightops"
 )
 
 
 def seed_regions(cur) -> dict[str, int]:
+    """Insert (or refresh) the fixed region list; return name -> region_id."""
     region_ids = {}
     for name in REGIONS:
         cur.execute(
@@ -40,10 +47,11 @@ def seed_regions(cur) -> dict[str, int]:
 
 
 def seed_customers(cur, region_ids: dict[str, int], count: int = 5000) -> list[int]:
+    """Insert synthetic customers, ~5% flagged as test accounts (for the exclude-test-accounts demo)."""
     customer_ids = []
     for i in range(count):
         region = random.choice(REGIONS)
-        is_test = random.random() < 0.05
+        is_test = random.random() < 0.05  # 5% test accounts — enough to make the exclusion visible
         cur.execute(
             "INSERT INTO analytics.customers (name, email, region_id, is_test) VALUES (%s, %s, %s, %s) RETURNING customer_id",
             (f"Customer {i:05d}", f"customer{i}@example.com", region_ids[region], is_test),
@@ -53,18 +61,19 @@ def seed_customers(cur, region_ids: dict[str, int], count: int = 5000) -> list[i
 
 
 def seed_orders(cur, customer_ids: list[int], region_ids: dict[str, int]) -> list[int]:
+    """Insert one order per customer per day (roughly) across a 24-month window."""
     order_ids = []
     start = date(2024, 1, 1)
     end = date(2025, 12, 31)
     current = start
-    batch = []
+    batch = []  # accumulate rows and insert in batches to keep this reasonably fast
 
     while current <= end:
         daily_orders = random.randint(60, 90)
         for _ in range(daily_orders):
             cid = random.choice(customer_ids)
             cur.execute("SELECT region_id FROM analytics.customers WHERE customer_id = %s", (cid,))
-            rid = cur.fetchone()[0]
+            rid = cur.fetchone()[0]  # keep the order's region consistent with its customer's region
             amount = round(random.uniform(25.0, 500.0), 2)
             batch.append((cid, rid, amount, current))
             if len(batch) >= 1000:
@@ -75,7 +84,7 @@ def seed_orders(cur, customer_ids: list[int], region_ids: dict[str, int]) -> lis
                 batch = []
         current += timedelta(days=1)
 
-    if batch:
+    if batch:  # flush any remaining rows below the batch threshold
         cur.executemany(
             "INSERT INTO analytics.orders (customer_id, region_id, amount, order_date) VALUES (%s, %s, %s, %s)",
             batch,
@@ -87,6 +96,7 @@ def seed_orders(cur, customer_ids: list[int], region_ids: dict[str, int]) -> lis
 
 
 def seed_refunds(cur, order_ids: list[int], region_ids: dict[str, int]) -> None:
+    """Insert refunds month by month, planting the anomaly spike in the target month/region."""
     north_id = region_ids[ANOMALY_REGION]
     current = date(2024, 1, 1)
     batch = []
@@ -94,11 +104,13 @@ def seed_refunds(cur, order_ids: list[int], region_ids: dict[str, int]) -> None:
     while current <= date(2025, 12, 31):
         month_start = current.replace(day=1)
         if month_start.year == ANOMALY_MONTH.year and month_start.month == ANOMALY_MONTH.month:
+            # This is the anomaly month: flood the target region with refunds far above baseline...
             for _ in range(ANOMALY_REFUND_COUNT):
                 oid = random.choice(order_ids)
                 amount = round(random.uniform(300.0, 800.0), 2)
                 day = random.randint(1, 28)
                 batch.append((oid, north_id, amount, date(2025, 6, day), random.choice(REFUND_REASONS)))
+            # ...while every other region stays at a normal baseline count, so the spike stands out
             for region_name, rid in region_ids.items():
                 if region_name == ANOMALY_REGION:
                     continue
@@ -106,7 +118,7 @@ def seed_refunds(cur, order_ids: list[int], region_ids: dict[str, int]) -> None:
                     oid = random.choice(order_ids)
                     amount = round(random.uniform(25.0, 200.0), 2)
                     batch.append((oid, rid, amount, date(2025, 6, random.randint(1, 28)), random.choice(REFUND_REASONS)))
-            current = date(2025, 7, 1)
+            current = date(2025, 7, 1)  # skip straight to next month — the anomaly month is fully handled
             if batch:
                 cur.executemany(
                     "INSERT INTO analytics.refunds (order_id, region_id, amount, refund_date, reason) VALUES (%s, %s, %s, %s, %s)",
@@ -115,6 +127,7 @@ def seed_refunds(cur, order_ids: list[int], region_ids: dict[str, int]) -> None:
                 batch = []
             continue
 
+        # Normal month: modest refund volume spread evenly across all regions
         monthly_refunds = random.randint(80, 120)
         for _ in range(monthly_refunds):
             oid = random.choice(order_ids)
@@ -124,7 +137,7 @@ def seed_refunds(cur, order_ids: list[int], region_ids: dict[str, int]) -> None:
             try:
                 refund_date = current.replace(day=day)
             except ValueError:
-                refund_date = current.replace(day=28)
+                refund_date = current.replace(day=28)  # guard against short months (e.g. Feb 29/30/31)
             batch.append((oid, rid, amount, refund_date, random.choice(REFUND_REASONS)))
 
         if len(batch) >= 1000:
@@ -139,7 +152,7 @@ def seed_refunds(cur, order_ids: list[int], region_ids: dict[str, int]) -> None:
         else:
             current = date(current.year, current.month + 1, 1)
 
-    if batch:
+    if batch:  # flush any remaining rows from the final month
         cur.executemany(
             "INSERT INTO analytics.refunds (order_id, region_id, amount, refund_date, reason) VALUES (%s, %s, %s, %s, %s)",
             batch,
@@ -147,6 +160,7 @@ def seed_refunds(cur, order_ids: list[int], region_ids: dict[str, int]) -> None:
 
 
 def seed_support_tickets(cur, customer_ids: list[int], count: int = 3000) -> None:
+    """Insert synthetic support tickets across a fixed set of realistic subjects/statuses."""
     subjects = ["Billing question", "Product not working", "Shipping delay", "Refund request", "Account access issue"]
     batch = []
     for i in range(count):
@@ -158,7 +172,7 @@ def seed_support_tickets(cur, customer_ids: list[int], count: int = 3000) -> Non
                 batch,
             )
             batch = []
-    if batch:
+    if batch:  # flush any remaining rows below the batch threshold
         cur.executemany(
             "INSERT INTO analytics.support_tickets (customer_id, subject, body, status) VALUES (%s, %s, %s, %s)",
             batch,
@@ -166,12 +180,14 @@ def seed_support_tickets(cur, customer_ids: list[int], count: int = 3000) -> Non
 
 
 def clear_analytics(cur) -> None:
+    """Wipe all analytics tables so the seed script is safely re-runnable."""
     cur.execute(
         "TRUNCATE analytics.support_tickets, analytics.refunds, analytics.orders, analytics.customers, analytics.regions RESTART IDENTITY CASCADE"
     )
 
 
 def main() -> None:
+    """Seed the full synthetic dataset end to end and print a verification summary."""
     print("Seeding InsightOps analytics database...")
     print(f"Planted anomaly: {ANOMALY_REFUND_COUNT} refunds in {ANOMALY_REGION} region, June 2025")
 
@@ -195,6 +211,7 @@ def main() -> None:
             cur.execute("SELECT COUNT(*) AS cnt FROM analytics.support_tickets")
             print(f"  Support tickets: {cur.fetchone()['cnt']}")
 
+            # Verify the planted anomaly actually landed as expected before declaring success
             cur.execute(
                 """
                 SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total
