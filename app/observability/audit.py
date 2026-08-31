@@ -20,10 +20,12 @@ from app.config import get_settings
 
 
 def _utcnow() -> datetime:
+    """Timezone-aware current time for every logged event."""
     return datetime.now(timezone.utc)
 
 
 def _json_default(value: Any) -> Any:
+    """json.dumps default= hook — serialize datetimes as ISO 8601 strings."""
     if isinstance(value, datetime):
         return value.isoformat()
     return value
@@ -33,9 +35,10 @@ def _json_default(value: Any) -> Any:
 class AuditLogger:
     """Persist audit events to Postgres when available, otherwise to disk."""
 
-    fallback_path: Path | None = None
+    fallback_path: Path | None = None  # JSONL file used when the database write fails
 
     def __post_init__(self) -> None:
+        """Resolve the fallback file path and cache the audit database URL."""
         settings = get_settings()
         if self.fallback_path is None:
             base_dir = Path(os.getenv("INSIGHTOPS_DATA_DIR", Path.home() / ".insightops"))
@@ -44,6 +47,7 @@ class AuditLogger:
         self._database_url = settings.database_url
 
     def _append_fallback(self, payload: dict[str, Any]) -> None:
+        """Append one JSON line to the local fallback log — used whenever the DB write fails."""
         assert self.fallback_path is not None
         self.fallback_path.parent.mkdir(parents=True, exist_ok=True)
         with self.fallback_path.open("a", encoding="utf-8") as handle:
@@ -51,6 +55,7 @@ class AuditLogger:
             handle.write("\n")
 
     def _execute(self, sql: str, params: tuple[Any, ...]) -> bool:
+        """Run one write against the audit database; return False (never raise) on any failure."""
         try:
             with psycopg.connect(self._database_url) as conn:
                 with conn.cursor() as cur:
@@ -58,9 +63,10 @@ class AuditLogger:
                 conn.commit()
             return True
         except Exception:
-            return False
+            return False  # caller falls back to the JSONL file — audit logging must never break a run
 
     def log_run_start(self, run_id: str, user_id: str, request: str) -> None:
+        """Record the start of a new run (upserts in case of a retried start)."""
         payload = {
             "event": "run_start",
             "run_id": run_id,
@@ -88,6 +94,7 @@ class AuditLogger:
         total_cost: float | None = None,
         total_ms: float | None = None,
     ) -> None:
+        """Update a run's status (and, for terminal states, its end time / cost / duration)."""
         payload = {
             "event": "run_status",
             "run_id": run_id,
@@ -122,6 +129,7 @@ class AuditLogger:
         attempts: int = 1,
         latency_ms: float | None = None,
     ) -> None:
+        """Record one tool invocation — this is the row-level record the compliance story relies on."""
         payload = {
             "event": "tool_call",
             "run_id": run_id,
@@ -158,6 +166,7 @@ class AuditLogger:
             self._append_fallback(payload)
 
     def record_dead_letter(self, run_id: str, payload: dict[str, Any], error: str, attempts: int) -> None:
+        """Record a job that exhausted its retries, mirroring what QueueWorker writes to the DLQ store."""
         item = {
             "event": "dead_letter",
             "run_id": run_id,
@@ -177,5 +186,5 @@ class AuditLogger:
 
 
 def get_audit_logger() -> AuditLogger:
+    """Construct a fresh AuditLogger (cheap — connections are opened per call, not held open)."""
     return AuditLogger()
-

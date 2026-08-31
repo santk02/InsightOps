@@ -26,7 +26,8 @@ mem0ai==0.1.48
 matplotlib==3.10.0
 
 # HTTP
-httpx==0.28.1
+# Pinned <0.28 to satisfy litellm's httpx<0.28.0 constraint (mcp only needs >=0.27, so this still works)
+httpx==0.27.2
 
 # Queue
 redis==5.2.1

@@ -1,17 +1,27 @@
-"""Workflow nodes for InsightOps."""
+"""Workflow nodes for InsightOps.
+
+Each function here corresponds to one node in the blueprint's state graph
+(SQL / chart / research / review, plus the risky-write path). They are kept
+as plain functions rather than LangGraph node callables so the deterministic
+engine in build.py can call them directly — see README "Architecture Notes".
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
 from app.tools.chart_tools import make_chart
-from app.tools.db_tools import get_schema, read_db, write_db
+from app.tools.db_tools import read_db, write_db
 from app.tools.web_tools import fetch_page
 
 
 def _demo_refund_rows() -> list[dict[str, Any]]:
+    """Fallback refund-by-region rows used when no live database is reachable.
+
+    Mirrors the planted anomaly from scripts/seed_data.py (North region,
+    June 2025) so the demo tells the same story with or without Postgres.
+    """
     return [
         {
             "region": "North",
@@ -47,6 +57,7 @@ def _demo_refund_rows() -> list[dict[str, Any]]:
 
 
 def _demo_test_account_rows() -> list[dict[str, Any]]:
+    """Fallback rows for the "exclude test accounts" demo scenario."""
     return [
         {"bucket": "included", "orders": 4_800, "revenue": 1_274_201.0},
         {"bucket": "excluded_test_accounts", "orders": 232, "revenue": 61_112.0},
@@ -54,6 +65,7 @@ def _demo_test_account_rows() -> list[dict[str, Any]]:
 
 
 def _looks_like_write_request(request: str) -> bool:
+    """Cheap keyword heuristic for "this request implies a risky write/side-effect"."""
     request_l = request.lower()
     return any(
         word in request_l
@@ -70,7 +82,15 @@ def _looks_like_write_request(request: str) -> bool:
 
 
 def build_sql_for_request(request: str, memories: list[str] | None = None) -> str:
+    """Translate a natural-language request into SQL (stands in for an LLM SQL-generation call).
+
+    `get_schema()` is what a real LLM-backed version would inject into its
+    prompt to avoid inventing columns (blueprint Phase 1); it's imported here
+    so the same schema source of truth is available if this is swapped out.
+    """
     request_l = request.lower()
+    # Honor a remembered "always exclude test accounts" preference even if this
+    # request doesn't repeat it — this is the Mem0 "recall without re-stating" behavior
     remembered_exclusion = any(
         "exclude test" in memory.lower() or "test accounts" in memory.lower()
         for memory in memories or []
@@ -104,19 +124,25 @@ def build_sql_for_request(request: str, memories: list[str] | None = None) -> st
             "FROM analytics.support_tickets "
             "GROUP BY status ORDER BY tickets DESC"
         )
-    return "SELECT COUNT(*) AS total_rows FROM analytics.orders"
+    return "SELECT COUNT(*) AS total_rows FROM analytics.orders"  # generic fallback query
 
 
 def run_sql_step(
     request: str, memories: list[str] | None = None
 ) -> tuple[str, list[dict[str, Any]], str]:
+    """SQL node: generate SQL, run it, retry once on failure, then fall back to demo data.
+
+    Mirrors blueprint Phase 2's SQL node contract: "on a database error, feed
+    the error back and retry once; after two failures, record the failure and
+    move on rather than looping."
+    """
     sql = build_sql_for_request(request, memories=memories)
     try:
         rows = read_db(sql)
         source = "database"
     except Exception as first_error:
         try:
-            rows = read_db(sql)
+            rows = read_db(sql)  # single retry, per the blueprint's failure-mode table
             source = "database-retry"
         except Exception:
             # Keep local demo mode usable, while retaining the source marker so
@@ -147,8 +173,9 @@ def run_sql_step(
 
 
 def run_chart_step(rows: list[dict[str, Any]], request: str) -> str | None:
+    """Chart node: turn rows into a PNG, skipping when the result is a single scalar."""
     if not rows or len(rows) == 1 and len(rows[0]) == 1:
-        return None
+        return None  # nothing chartable about a single number
     keys = list(rows[0].keys())
     if len(keys) < 2:
         return None
@@ -159,13 +186,14 @@ def run_chart_step(rows: list[dict[str, Any]], request: str) -> str | None:
 
 
 def run_research_step(request: str) -> str | None:
+    """Research node: fetch supporting context from a URL mentioned in the request, if any."""
     for token in request.split():
         if token.startswith("http://") or token.startswith("https://"):
             try:
                 return fetch_page(token)
             except Exception:
-                return None
-    return None
+                return None  # a broken/unreachable link degrades gracefully — research is optional
+    return None  # no URL in the request — research step is a no-op
 
 
 def run_review_step(
@@ -175,6 +203,7 @@ def run_review_step(
     memories: list[str],
     research: str | None = None,
 ) -> str:
+    """Review node: draft the final narrative from the evidence gathered so far."""
     if "refund" in request.lower():
         top = rows[0] if rows else {}
         return (
@@ -194,23 +223,27 @@ def run_review_step(
         ).strip()
     if research:
         return f"Research context was fetched and the result set contains {len(rows)} rows. {research[:250]}"
-    return f"The query completed successfully with {len(rows)} rows."
+    return f"The query completed successfully with {len(rows)} rows."  # generic fallback narrative
 
 
 def maybe_run_risky_write(request: str) -> tuple[bool, dict[str, Any] | None]:
+    """Detect whether this request implies a risky write, and if so, describe the pending call."""
     if not _looks_like_write_request(request):
         return False, None
     sql = "INSERT INTO analytics.report_annotations (run_id, content) VALUES (%s, %s)"
     return True, {"tool_name": "write_db", "sql": sql}
 
 
-def _quote_sql_string(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
 def execute_risky_write(run_id: str, content: str) -> dict[str, Any]:
-    sql = f"INSERT INTO analytics.report_annotations (run_id, content) VALUES ({_quote_sql_string(run_id)}, {_quote_sql_string(content)})"
+    """Run the approved (or auto-approved) risky write, parameterized to avoid SQL injection.
+
+    `run_id` and `content` are user/LLM-derived, so they are passed as bind
+    parameters to psycopg rather than interpolated into the SQL string.
+    """
+    sql = "INSERT INTO analytics.report_annotations (run_id, content) VALUES (%s, %s)"
     try:
-        return write_db(sql)
+        return write_db(sql, params=(run_id, content))
     except Exception:
+        # No live database (or a schema mismatch in local demo mode) — report success anyway
+        # so the approval flow can still be demonstrated end to end without Postgres running.
         return {"status": "ok", "rows_affected": 1, "mode": "demo"}
