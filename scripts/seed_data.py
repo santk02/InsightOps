@@ -42,7 +42,7 @@ def seed_regions(cur) -> dict[str, int]:
             "INSERT INTO analytics.regions (name) VALUES (%s) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING region_id",
             (name,),
         )
-        region_ids[name] = cur.fetchone()[0]
+        region_ids[name] = cur.fetchone()["region_id"]
     return region_ids
 
 
@@ -56,7 +56,7 @@ def seed_customers(cur, region_ids: dict[str, int], count: int = 5000) -> list[i
             "INSERT INTO analytics.customers (name, email, region_id, is_test) VALUES (%s, %s, %s, %s) RETURNING customer_id",
             (f"Customer {i:05d}", f"customer{i}@example.com", region_ids[region], is_test),
         )
-        customer_ids.append(cur.fetchone()[0])
+        customer_ids.append(cur.fetchone()["customer_id"])
     return customer_ids
 
 
@@ -73,7 +73,7 @@ def seed_orders(cur, customer_ids: list[int], region_ids: dict[str, int]) -> lis
         for _ in range(daily_orders):
             cid = random.choice(customer_ids)
             cur.execute("SELECT region_id FROM analytics.customers WHERE customer_id = %s", (cid,))
-            rid = cur.fetchone()[0]  # keep the order's region consistent with its customer's region
+            rid = cur.fetchone()["region_id"]  # keep the order's region consistent with its customer's region
             amount = round(random.uniform(25.0, 500.0), 2)
             batch.append((cid, rid, amount, current))
             if len(batch) >= 1000:
@@ -91,7 +91,7 @@ def seed_orders(cur, customer_ids: list[int], region_ids: dict[str, int]) -> lis
         )
 
     cur.execute("SELECT order_id FROM analytics.orders")
-    order_ids = [r[0] for r in cur.fetchall()]
+    order_ids = [r["order_id"] for r in cur.fetchall()]
     return order_ids
 
 
